@@ -1,0 +1,328 @@
+---
+title: "COVID-19 Data by State"
+author: "kyoungwan.kang@cgu.edu"
+date: "4/27/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+```
+
+
+```{r import-packages}
+library(tidyverse)
+library(lubridate)
+```
+
+
+```{r import-data}
+
+rawdata <- read.csv("https://raw.githubusercontent.com/nytimes/covid-19-data/master/us-states.csv")
+
+poprawdata <- read.csv("https://www2.census.gov/programs-surveys/popest/datasets/2010-2020/national/totals/nst-est2020.csv")
+
+# SUMLEV Geographic summary level 
+# REGION Census Region code 
+# DIVISION Census Division code 
+# STATE State FIPS code 
+# NAME State name
+# POPESTIMATE2020
+
+maskflagdf <- read.csv("covid-19_mask_by_state.csv")
+
+```
+
+# COVID-19 Historical U.S. State-Level Data from the New York Times
+Coronavirus (Covid-19) Data in the United States: [https://github.com/nytimes/covid-19-data](https://github.com/nytimes/covid-19-data)
+Datafile: U.S. State-Level Data ([Raw CSV](https://raw.githubusercontent.com/nytimes/covid-19-data/master/us-states.csv))
+
+U.S. tracking page by the New York Times - [Link](https://www.nytimes.com/interactive/2020/us/coronavirus-us-cases.html)
+
+```{r}
+tail(rawdata, 10)
+```
+
+
+
+# 2020 State Population Estimates
+<Annual Estimates of the Resident Population for the United States, States, and the District of Columbia: April 1, 2010 to July 1, 2020 (NST-EST2020)> 
+
+[State Population Totals: 2010-2019](https://www.census.gov/data/datasets/time-series/demo/popest/2010s-state-total.html)
+
+Source: U.S. Census Bureau, Population Division
+Dataset file [link](https://www2.census.gov/programs-surveys/popest/datasets/2010-2020/nation/NST-EST2020.csv)
+
+```{r}
+tail(poprawdata, 10)
+```
+
+# States with mask mandates
+
+* [These States Have COVID-19 Mask Mandates (04/12/2021)](https://www.usnews.com/news/best-states/articles/these-are-the-states-with-mask-mandates) from [U.S.News](https://www.usnews.com)
+  + States with mask mandates (27 states + D.C.)
+  California, Colorado, Connecticut, Delaware, District of Columbia, Hawaii, Illinois, Kentucky, Louisiana,
+  Maine, Maryland, Massachusetts, Michigan, Minnesota, Nevada, New Hampshire, New Jersey, New Mexico, New York,
+  North Carolina, Ohio, Oregon, Pennsylvania, Rhode Island, Vermont, Virginia, Washington, West Virginia 
+  
+  + States without mask mandates (23 states)
+  Alabama, Alaska, Arizona, Arkansas, Florida, Georgia, Idaho, Indiana, Iowa, Kansas, Mississippi, Missouri,
+  Montana, Nebraska, North Dakota, Oklahoma, South Carolina, South Dakota, Tennessee, Texas, Utah, Wisconsin,
+  Wyoming
+
+* [First Trust COVID Tracker 03/05/21](https://www.ftportfolios.com/Blogs/EconBlog/2021/3/5/coronavirus-high-frequency-data-030521) - [one page report](https://www.ftportfolios.com/common/contentfileloader.aspx?contentguid=a942b521-8099-40ed-aaa2-203fd59bc396)
+  + States with mask mandates
+  + States without mask mandates (16 states)
+  Alaska, Arizona, Florida, Georgia, Idaho, Iowa, Mississippi, Missouri, Montana, Nebraska, North Dakota,
+  Oklahoma, South Carolina, South Dakota, Tennessee, Texas
+
+
+States showing up in the map in the one page report being used for this analysis
+
+```{r}
+# Get data on the latest day
+thelatestdate <- max(rawdata[[1]])
+
+# populations for states
+popdf <-
+  poprawdata %>%
+  select (state = NAME, pop = POPESTIMATE2019) 
+
+# Create a data frame, casedf, by using spread function (cf. reshape::cast)
+casedf <-
+  rawdata %>%
+  select(state, fips, date, cases) %>%
+  spread(key = date,value = cases)
+
+# Get numbers of columns in casedf
+numcol <- ncol(casedf)
+
+# Replace NA with 0
+i <- 0
+for (i in 3:numcol) {
+  casedf[[i]] <- replace_na(casedf[[i]],0)
+}
+
+# Copy casedf to dailycasedf to calculate daily new case
+dailycasedf <- casedf
+
+# Calculate daily new cases and put them to each column of date in dailycasedf
+for (i in 4:numcol) {
+  dailycasedf[[i]] = casedf[[i]] - casedf[[(i-1)]]
+}
+
+# Copy state population in popdf and state names & fips in casedf to dailycapitadf 
+# No populations in 
+dailycapitadf <- left_join(popdf[6:56,], dailycasedf, by = "state")
+
+# Calculate daily cases per 100K people
+for (i in 4:ncol(dailycapitadf)) {
+  dailycapitadf[[i]] = round(((dailycapitadf[[i]] / dailycapitadf[[2]]) * 100000), digits = 2)
+}
+```
+
+```{r}
+# Calculate weekly average cases per 100K people
+numcol_dcapita <- ncol(dailycapitadf)
+  
+# Change format to long with pivot_longer() (cf. reshape::melt(), dplyr::gather())
+tempcapita <-
+  dailycapitadf %>%
+  pivot_longer(
+    cols = colnames(dailycapitadf)[4:numcol_dcapita],
+    names_to = "date",
+    values_to = "casepercapita"
+  )
+
+# Add week column by using lubridate::year() and lubridate::week() (year-week format)
+tempcapita <- 
+  tempcapita %>%
+  mutate(
+    week = paste0(epiyear(date), "-", if_else(nchar(x <- epiweek(date)) > 1, as.character(x), paste0("0", x)))
+  )
+
+# Create weeklycapita data frame and calculate weekly average cases per 100K by state
+weeklycapita <-
+  tempcapita %>% group_by(state, week) %>%
+  summarize(weeklymean = round(mean(casepercapita), digits = 2))
+
+# Subset between 12/01/2020 and 03/02/2021 
+startweek <- paste0("2020-", as.character(epiweek("2020-12-01")))
+lastweek <- paste0("2021-", if_else(nchar(x <- epiweek("2021-03-02")) > 1, as.character(x), paste0("0", x)))
+
+ourdata <-
+weeklycapita %>%
+  filter(week >= startweek & week <= lastweek)
+```
+
+
+```{r}
+# Add mask flag to the data frame
+ourdata <- ourdata %>%
+  spread(key = week, value = weeklymean)
+
+ourdata <- 
+  left_join(
+    ourdata,
+    select(maskflagdf, state, flag = flag.0302),
+    by = "state"
+  ) %>%
+  select (
+    state,
+    colnames(.)[16],
+    colnames(.)[2:15]
+  ) %>%
+  pivot_longer(
+    .,
+   cols = colnames(.)[3:16],
+   names_to = "week",
+   values_to = "weeklymean"
+  )
+
+```
+
+# Weekly average cases per 100K people by state
+
+```{r}
+ggplot(
+  data = ourdata,
+  mapping = aes(
+    x = week,
+    y = weeklymean
+  )    
+) + 
+  geom_point(
+    mapping = aes(
+    group = state,
+    color = flag
+    )  
+  ) +
+  geom_smooth(
+    mapping = aes(
+    group = flag,
+    color = flag
+    )  
+  ) +
+  scale_x_discrete(
+    breaks = c("2020-49", "2021-01", "2021-05", "2021-09")
+  )
+  
+```
+
+* Red dots: States without mask mandates
+* Blue dots: States with mask mandates
+* Red and blue lines: LOESS (locally estimated scatterplott smoothing): a generalization of moving average and polynomial regression. - [Wikipedia link](https://en.wikipedia.org/wiki/Local_regression)
+* X axis
+  + 2020-49: 49th week of 2020, the first day: Sunday, `r as.character(cut(ymd("2020-01-01") + weeks(48), "weeks", start.on.monday = F))`
+  + 2021-01: 1st week of 2021, the first day: Sunday, `r as.character(cut(ymd("2021-01-01") + weeks(0), "weeks", start.on.monday = F))`
+  + 2021-05: 5th week of 2021, the first day: Sunday, `r as.character(cut(ymd("2021-01-01") + weeks(0), "weeks", start.on.monday = F))``r as.character(cut(ymd("2021-01-01") + weeks(4), "weeks", start.on.monday = F))`
+  + 2021-09: 9th week of 2021, the first day: Sunday, `r as.character(cut(ymd("2021-01-01") + weeks(8), "weeks", start.on.monday = F))`
+  
+
+
+```{r}
+
+# create a summary data frame
+tmpdf <- ourdata
+
+# Change week to the first day of the week
+# as.character(cut(ymd("2020-01-01") + weeks(48) - 1, "weeks", start.on.monday = F))
+
+# Calculate weekly average for states with and without mask mandates
+sumdf <- tmpdf %>%
+  group_by(flag, week) %>%
+  summarize(
+    weeklyavg = round(mean(weeklymean), digits = 2)
+  ) %>% ungroup()
+```
+
+
+# Weekly average cases per 100K people by states with mask mandaes and ones without mask mandaes
+```{r}
+# Plot
+ggplot(
+  data = sumdf,
+  mapping = 
+      aes(
+        x = week,
+        y = weeklyavg,
+        group = flag,
+        color = flag
+      )
+  ) +
+  geom_line() +
+  geom_smooth(method = loess) +
+  scale_x_discrete(
+    breaks = c("2020-49", "2021-01", "2021-05", "2021-09")
+  )
+
+```
+
+* Blue lines: states with mask mandates (bold line show up LOESS )
+* Red lines: states without mask mandates (bold line show up LOESS)
+* X axis
+  + 2020-49: 49th week of 2020, the first day: Sunday, `r as.character(cut(ymd("2020-01-01") + weeks(48), "weeks", start.on.monday = F))`
+  + 2021-01: 1st week of 2021, the first day: Sunday, `r as.character(cut(ymd("2021-01-01") + weeks(0), "weeks", start.on.monday = F))`
+  + 2021-05: 5th week of 2021, the first day: Sunday, `r as.character(cut(ymd("2021-01-01") + weeks(0), "weeks", start.on.monday = F))``r as.character(cut(ymd("2021-01-01") + weeks(4), "weeks", start.on.monday = F))`
+  + 2021-09: 9th week of 2021, the first day: Sunday, `r as.character(cut(ymd("2021-01-01") + weeks(8), "weeks", start.on.monday = F))`
+
+# Weekly average cases per 100K people in states with mask mandaes
+```{r}
+# Plot
+ggplot(
+  data = filter(sumdf, flag == "Y"),
+  mapping = 
+      aes(
+        x = week,
+        y = weeklyavg,
+        group = flag,
+        color = flag
+      )
+  ) +
+  geom_line(color = "blue") +
+  geom_smooth(method = loess) +
+  scale_x_discrete(
+    breaks = c("2020-49", "2021-01", "2021-05", "2021-09")
+  ) + 
+  ylim(0, 100)
+```
+
+* Blue line: weekly average cases per 100K people in the states 
+* Red line: LOESS
+* Grey area: Standard Error 
+* X axis
+  + 2020-49: 49th week of 2020, the first day: Sunday, `r as.character(cut(ymd("2020-01-01") + weeks(48), "weeks", start.on.monday = F))`
+  + 2021-01: 1st week of 2021, the first day: Sunday, `r as.character(cut(ymd("2021-01-01") + weeks(0), "weeks", start.on.monday = F))`
+  + 2021-05: 5th week of 2021, the first day: Sunday, `r as.character(cut(ymd("2021-01-01") + weeks(0), "weeks", start.on.monday = F))``r as.character(cut(ymd("2021-01-01") + weeks(4), "weeks", start.on.monday = F))`
+  + 2021-09: 9th week of 2021, the first day: Sunday, `r as.character(cut(ymd("2021-01-01") + weeks(8), "weeks", start.on.monday = F))`
+
+
+# Weekly average cases per 100K people in states without mask mandaes
+```{r}
+# Plot
+ggplot(
+  data = filter(sumdf, flag == "N"),
+  mapping = 
+      aes(
+        x = week,
+        y = weeklyavg,
+        group = flag,
+        color = flag
+      )
+  ) +
+  geom_line(color = "blue") +
+  geom_smooth(method = loess) +
+  scale_x_discrete(
+    breaks = c("2020-49", "2021-01", "2021-05", "2021-09")
+  ) +
+  ylim(0, 100)
+```
+
+* Blue line: weekly average cases per 100K people in the states 
+* Red line: LOESS
+* Grey area: Standard Error
+* X axis
+  + 2020-49: 49th week of 2020, the first day: Sunday, `r as.character(cut(ymd("2020-01-01") + weeks(48), "weeks", start.on.monday = F))`
+  + 2021-01: 1st week of 2021, the first day: Sunday, `r as.character(cut(ymd("2021-01-01") + weeks(0), "weeks", start.on.monday = F))`
+  + 2021-05: 5th week of 2021, the first day: Sunday, `r as.character(cut(ymd("2021-01-01") + weeks(0), "weeks", start.on.monday = F))``r as.character(cut(ymd("2021-01-01") + weeks(4), "weeks", start.on.monday = F))`
+  + 2021-09: 9th week of 2021, the first day: Sunday, `r as.character(cut(ymd("2021-01-01") + weeks(8), "weeks", start.on.monday = F))`
